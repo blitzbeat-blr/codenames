@@ -185,7 +185,6 @@ textarea.inp{min-height:110px;resize:vertical;font-size:14px;line-height:1.5}
 .marks{position:absolute;left:4%;top:7%;display:flex;flex-wrap:wrap;gap:2px;max-width:72%;z-index:2}
 .mk{min-width:18px;height:18px;padding:0 5px;border-radius:999px;background:var(--green);color:#fff;font:700 11px/18px var(--cond);text-align:center;box-shadow:0 1px 3px rgba(0,0,0,.35);text-transform:uppercase}
 .mk.me{background:#fff;color:var(--green-d)}
-.mk.ord{background:#0c5c33;box-shadow:0 0 0 1.5px #fff inset,0 1px 3px rgba(0,0,0,.35)}
 .card.held .face{filter:brightness(1.06)}
 .end-btn{white-space:normal;text-align:center}
 .confirm{position:absolute;right:-7px;top:-9px;width:34px;height:34px;border-radius:50%;border:3px solid #fff;background:linear-gradient(180deg,#3ad486,#1f9a56);color:#fff;display:none;place-items:center;padding:0;z-index:3;box-shadow:0 3px 10px rgba(0,0,0,.4);animation:pop .25s ease-out}
@@ -432,13 +431,12 @@ textarea.inp{min-height:110px;resize:vertical;font-size:14px;line-height:1.5}
     </ul>
     <h4>Отгадывание</h4>
     <ul>
-      <li>Нажмите на карточку — появится ваша зелёная метка с номером очереди. Обсудите с командой.</li>
-      <li><b>«Открыть выбранные и завершить ход»</b> — отмеченные карточки перевернутся по очереди (1, 2…) до первой ошибки, затем ход перейдёт.</li>
-      <li>Зелёная <b>✓</b> на карточке открывает только её — так можно отгадывать по одной и продолжать ход.</li>
+      <li>Нажмите на карточку — появится ваша зелёная метка (её видят все). Обсудите с командой.</li>
+      <li>Открывается карточка вручную — зелёной кнопкой <b>✓</b> на ней.</li>
       <li>Своя карточка — можно отгадывать дальше, всего до «число + 1» за ход.</li>
       <li>Мирный житель или агент соперников — ход переходит другой команде.</li>
       <li>Убийца — ваша команда сразу проигрывает.</li>
-      <li>Остановиться можно в любой момент кнопкой «Завершить ход» (без отметок она просто передаёт ход).</li>
+      <li>Кнопка «Пропустить ход» / «Завершить ход» передаёт ход, ничего не открывая, — даже если на карточках стоят метки.</li>
     </ul>
     <div class="legend">
       <div><i style="background:var(--red)"></i>Агенты красных</div>
@@ -987,17 +985,11 @@ const G = (() => {
         if (g.rev[i]) return 'Эта карточка уже открыта';
         return revealCard(S, p, i, now);
       }
-      case 'end': {
+      case 'end': { // просто передаём ход: ничего не открываем, отметки снимаются
         const e = canGuess(S, p); if (e) return e;
-        const team = g.turn, round = g.round;
-        // открываем только то, что игрок видел отмеченным при нажатии, и что всё ещё отмечено
-        const list = (Array.isArray(a.reveal) ? a.reveal : []).map(x => x | 0)
-          .filter((x, k, arr) => x >= 0 && x < 25 && arr.indexOf(x) === k && !g.rev[x] && g.marks[x] && g.marks[x].length);
-        for (const i of list) {
-          revealCard(S, p, i, now);
-          if (S.phase !== 'play' || g.round !== round) return null; // промах, лимит или конец игры — ход уже перешёл
-        }
-        g.log.push({ k: 'end', t: team, by: p.name });
+        let guessed = 0;
+        for (let k = g.log.length - 1; k >= 0 && g.log[k].k !== 'clue'; k--) if (g.log[k].k === 'guess') guessed++;
+        g.log.push(guessed ? { k: 'end', t: g.turn, by: p.name } : { k: 'end', t: g.turn, by: p.name, s: 1 });
         endTurn(S, now);
         return null;
       }
@@ -1960,7 +1952,6 @@ function renderBoard(S, me) {
   const amSpy = me.role === 'spy' && !!me.team;
   const showKey = over || amSpy;
   const activeOp = S.phase === 'play' && g.stage === 'guess' && me.role === 'op' && me.team === g.turn;
-  const order = G.markOrder(g);
   const now = Date.now();
   let nextFlip = Infinity;
   for (let i = 0; i < 25; i++) {
@@ -1992,12 +1983,10 @@ function renderBoard(S, me) {
     v.c.setAttribute('aria-label', w + (rev || showKey ? ' — ' + COLOR_NAME[col] : ''));
     v.c.title = rev ? w + ' — ' + COLOR_NAME[col] : '';
     // метки
-    const pos = rev || !m.length ? -1 : order.indexOf(i);
-    const mk = rev ? '' : (pos + 1) + '|' + m.join(',');
+    const mk = rev ? '' : m.join(',');
     if (v.key !== mk) {
       v.key = mk;
       v.marks.textContent = '';
-      if (pos >= 0) { const o = el('span', 'mk ord', String(pos + 1)); o.title = 'Откроется ' + (pos + 1) + '-й'; v.marks.appendChild(o); }
       const show = m.slice(0, 4);
       show.forEach(id => {
         const s = el('span', 'mk' + (id === myId ? ' me' : ''), initials(S.players[id].name));
@@ -2030,16 +2019,16 @@ function renderClue(S, me) {
     showBox.appendChild(pill);
     const activeOp = me.role === 'op' && me.team === g.turn;
     if (activeOp) {
-      const order = G.markOrder(g);
-      const b = el('button', 'btn end-btn' + (order.length ? ' primary' : ''),
-        order.length ? 'Открыть выбранные (' + order.length + ') и завершить ход' : 'Завершить ход');
+      // открывали ли уже карточки в этом ходу
+      let guessed = 0;
+      for (let k = g.log.length - 1; k >= 0 && g.log[k].k !== 'clue'; k--) if (g.log[k].k === 'guess') guessed++;
+      const b = el('button', 'btn end-btn', guessed ? 'Завершить ход' : 'Пропустить ход');
       b.type = 'button';
-      b.onclick = () => { b.disabled = true; dispatch('end', { reveal: order }); };
+      b.title = 'Передать ход соперникам, ничего не открывая';
+      b.onclick = () => { b.disabled = true; dispatch('end'); };
       showBox.appendChild(b);
-      hint.textContent = order.length
-        ? 'Отмеченные откроются по очереди (1, 2…) до первой ошибки, затем ход перейдёт. Зелёная ✓ на карточке — открыть только её и продолжить.' +
-          (g.left !== null && order.length > g.left ? ' Сейчас можно открыть не больше ' + g.left + '.' : '')
-        : 'Нажмите на карточки, чтобы выбрать их, — потом «Открыть выбранные». Зелёная ✓ на карточке — открыть её сразу.';
+      hint.textContent = 'Нажмите на карточку, чтобы отметить её для команды. Открывает карточку зелёная ✓ на ней. ' +
+        '«' + b.textContent + '» — передать ход, ничего не открывая.';
     } else if (me.role === 'spy' && me.team === g.turn) {
       hint.textContent = 'Ваша команда отгадывает. Капитан молчит и не подаёт знаков 🤐';
     }
@@ -2080,7 +2069,7 @@ function logEntry(e) {
     d.className = 'e ' + e.t;
     const ok = e.c === e.t;
     d.append(document.createTextNode(e.by + ' → '), el('span', 'gw', e.w), el('span', 'tag ' + e.c, ok ? 'свой агент ✓' : COLOR_NAME[e.c]));
-  } else if (e.k === 'end') { d.className = 'e ' + e.t; d.textContent = e.by + ' завершает ход'; }
+  } else if (e.k === 'end') { d.className = 'e ' + e.t; d.textContent = e.by + (e.s ? ' пропускает ход' : ' завершает ход'); }
   else if (e.k === 'timeout') { d.className = 'e sys'; d.textContent = '⏱ Время ' + T.gen + ' вышло — ход переходит'; }
   else if (e.k === 'win') {
     d.className = 'e win';

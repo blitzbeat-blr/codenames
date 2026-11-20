@@ -185,6 +185,9 @@ textarea.inp{min-height:110px;resize:vertical;font-size:14px;line-height:1.5}
 .marks{position:absolute;left:4%;top:7%;display:flex;flex-wrap:wrap;gap:2px;max-width:72%;z-index:2}
 .mk{min-width:18px;height:18px;padding:0 5px;border-radius:999px;background:var(--green);color:#fff;font:700 11px/18px var(--cond);text-align:center;box-shadow:0 1px 3px rgba(0,0,0,.35);text-transform:uppercase}
 .mk.me{background:#fff;color:var(--green-d)}
+.mk.ord{background:#0c5c33;box-shadow:0 0 0 1.5px #fff inset,0 1px 3px rgba(0,0,0,.35)}
+.card.held .face{filter:brightness(1.06)}
+.end-btn{white-space:normal;text-align:center}
 .confirm{position:absolute;right:-7px;top:-9px;width:34px;height:34px;border-radius:50%;border:3px solid #fff;background:linear-gradient(180deg,#3ad486,#1f9a56);color:#fff;display:none;place-items:center;padding:0;z-index:3;box-shadow:0 3px 10px rgba(0,0,0,.4);animation:pop .25s ease-out}
 .confirm svg{width:18px;height:18px;stroke-width:3.2}
 .card.can-confirm .confirm{display:grid}
@@ -429,11 +432,13 @@ textarea.inp{min-height:110px;resize:vertical;font-size:14px;line-height:1.5}
     </ul>
     <h4>Отгадывание</h4>
     <ul>
-      <li>Нажмите на карточку — появится ваша зелёная метка. Обсудите с командой и откройте карточку кнопкой <b>✓</b>.</li>
+      <li>Нажмите на карточку — появится ваша зелёная метка с номером очереди. Обсудите с командой.</li>
+      <li><b>«Открыть выбранные и завершить ход»</b> — отмеченные карточки перевернутся по очереди (1, 2…) до первой ошибки, затем ход перейдёт.</li>
+      <li>Зелёная <b>✓</b> на карточке открывает только её — так можно отгадывать по одной и продолжать ход.</li>
       <li>Своя карточка — можно отгадывать дальше, всего до «число + 1» за ход.</li>
       <li>Мирный житель или агент соперников — ход переходит другой команде.</li>
       <li>Убийца — ваша команда сразу проигрывает.</li>
-      <li>Остановиться можно в любой момент кнопкой «Завершить ход».</li>
+      <li>Остановиться можно в любой момент кнопкой «Завершить ход» (без отметок она просто передаёт ход).</li>
     </ul>
     <div class="legend">
       <div><i style="background:var(--red)"></i>Агенты красных</div>
@@ -724,7 +729,7 @@ const G = (() => {
     ], rnd);
     return {
       words, key, rev: Array(25).fill(0), start, turn: start, stage: 'clue',
-      clue: null, left: null, marks: {}, log: [{ k: 'start', t: start }],
+      clue: null, left: null, marks: {}, mo: [], log: [{ k: 'start', t: start }],
       winner: null, reason: null, deadline: null, diff: settings.diff, round: 1
     };
   }
@@ -777,6 +782,15 @@ const G = (() => {
       const m = S.game.marks[k].filter(x => x !== id);
       if (m.length) S.game.marks[k] = m; else delete S.game.marks[k];
     }
+    S.game.mo = markOrder(S.game);
+  }
+
+  // карточки с отметками в порядке, в котором их отметили впервые
+  function markOrder(g) {
+    const has = i => !g.rev[i] && g.marks[i] && g.marks[i].length;
+    const mo = (Array.isArray(g.mo) ? g.mo : []).filter(has);
+    Object.keys(g.marks).map(Number).forEach(i => { if (has(i) && !mo.includes(i)) mo.push(i); });
+    return mo;
   }
 
   function removePlayer(S, id) {
@@ -800,15 +814,34 @@ const G = (() => {
     g.clue = null;
     g.left = null;
     g.marks = {};
+    g.mo = [];
     g.round++;
     setDeadline(S, now);
   }
 
   function finish(S, winner, reason) {
     const g = S.game;
-    g.winner = winner; g.reason = reason; g.deadline = null; g.marks = {};
+    g.winner = winner; g.reason = reason; g.deadline = null; g.marks = {}; g.mo = [];
     g.log.push({ k: 'win', t: winner, r: reason });
     S.phase = 'over';
+    return null;
+  }
+
+  function revealCard(S, p, i, now) {
+    const g = S.game;
+    g.rev[i] = 1;
+    delete g.marks[i];
+    g.mo = markOrder(g);
+    const c = g.key[i], team = g.turn;
+    g.log.push({ k: 'guess', t: team, by: p.name, w: g.words[i], c });
+    if (c === 'assassin') return finish(S, other(team), 'assassin');
+    if (remaining(g, team) === 0) return finish(S, team, 'agents');
+    if (remaining(g, other(team)) === 0) return finish(S, other(team), 'agents');
+    if (c === team) {
+      if (g.left !== null) { g.left--; if (g.left <= 0) endTurn(S, now); }
+    } else {
+      endTurn(S, now);
+    }
     return null;
   }
 
@@ -931,6 +964,7 @@ const G = (() => {
         g.left = n === '0' || n === '∞' ? null : +n + 1;
         g.stage = 'guess';
         g.marks = {};
+        g.mo = [];
         setDeadline(S, now);
         g.log.push({ k: 'clue', t: g.turn, by: p.name, w: g.clue.w, n });
         return null;
@@ -943,6 +977,7 @@ const G = (() => {
         const j = m.indexOf(a.from);
         if (j >= 0) m.splice(j, 1); else m.push(a.from);
         if (m.length) g.marks[i] = m; else delete g.marks[i];
+        g.mo = markOrder(g);
         return null;
       }
       case 'reveal': {
@@ -950,23 +985,19 @@ const G = (() => {
         const i = a.idx | 0;
         if (i < 0 || i > 24) return null;
         if (g.rev[i]) return 'Эта карточка уже открыта';
-        g.rev[i] = 1;
-        delete g.marks[i];
-        const c = g.key[i], team = g.turn;
-        g.log.push({ k: 'guess', t: team, by: p.name, w: g.words[i], c });
-        if (c === 'assassin') return finish(S, other(team), 'assassin');
-        if (remaining(g, team) === 0) return finish(S, team, 'agents');
-        if (remaining(g, other(team)) === 0) return finish(S, other(team), 'agents');
-        if (c === team) {
-          if (g.left !== null) { g.left--; if (g.left <= 0) endTurn(S, now); }
-        } else {
-          endTurn(S, now);
-        }
-        return null;
+        return revealCard(S, p, i, now);
       }
       case 'end': {
         const e = canGuess(S, p); if (e) return e;
-        g.log.push({ k: 'end', t: g.turn, by: p.name });
+        const team = g.turn, round = g.round;
+        // открываем только то, что игрок видел отмеченным при нажатии, и что всё ещё отмечено
+        const list = (Array.isArray(a.reveal) ? a.reveal : []).map(x => x | 0)
+          .filter((x, k, arr) => x >= 0 && x < 25 && arr.indexOf(x) === k && !g.rev[x] && g.marks[x] && g.marks[x].length);
+        for (const i of list) {
+          revealCard(S, p, i, now);
+          if (S.phase !== 'play' || g.round !== round) return null; // промах, лимит или конец игры — ход уже перешёл
+        }
+        g.log.push({ k: 'end', t: team, by: p.name });
         endTurn(S, now);
         return null;
       }
@@ -992,7 +1023,7 @@ const G = (() => {
 
   return {
     TEAMS, MAX_PLAYERS, TIMERS, DIFFS, NAME_GEN, other, norm, shuffle, listOf, parseWords, related,
-    pickWords, makeGame, remaining, spyOf, opsOf, isAdmin, newRoom, apply, removePlayer, cleanName
+    pickWords, makeGame, remaining, spyOf, opsOf, isAdmin, newRoom, apply, removePlayer, cleanName, markOrder
   };
 })();
 
@@ -1929,18 +1960,28 @@ function renderBoard(S, me) {
   const amSpy = me.role === 'spy' && !!me.team;
   const showKey = over || amSpy;
   const activeOp = S.phase === 'play' && g.stage === 'guess' && me.role === 'op' && me.team === g.turn;
+  const order = G.markOrder(g);
+  const now = Date.now();
+  let nextFlip = Infinity;
   for (let i = 0; i < 25; i++) {
-    const v = cards[i], w = g.words[i], col = g.key[i], rev = !!g.rev[i];
-    const m = (g.marks[i] || []).filter(id => S.players[id]);
+    const v = cards[i], w = g.words[i], col = g.key[i];
+    let rev = !!g.rev[i], held = false, flipNow = false;
+    if (rev && flipAt[i]) { // карточка открыта, но её очередь переворачиваться ещё не пришла
+      if (flipAt[i] > now) { rev = false; held = true; nextFlip = Math.min(nextFlip, flipAt[i]); }
+      else { delete flipAt[i]; flipNow = true; }
+    }
+    const m = held ? [] : (g.marks[i] || []).filter(id => S.players[id]);
     const mine = m.includes(myId);
     let cls = 'card';
     if (rev) cls += ' revealed c-' + col;
-    else if (showKey) cls += ' known c-' + col;
-    if (activeOp && !rev) cls += ' clickable';
+    else if (showKey && (!held || !over)) cls += ' known c-' + col;
+    if (activeOp && !rev && !held) cls += ' clickable';
     if (mine && !rev) cls += ' mine';
     if (activeOp && !rev && m.length) cls += ' can-confirm';
-    if (v.c.classList.contains('flip')) cls += ' flip';
+    if (held) cls += ' held';
+    if (flipNow || v.c.classList.contains('flip')) cls += ' flip';
     v.c.className = cls;
+    if (flipNow) { const c = v.c; setTimeout(() => c.classList.remove('flip'), 700); }
     if (v.ws.textContent !== w) { v.ws.textContent = w; v.c.style.setProperty('--n', Math.max(4, w.length)); needFit = true; }
     v.cw.textContent = w;
     const icon = col === 'assassin' ? 'i-target' : col === 'neutral' ? 'i-person' : 'i-agent';
@@ -1951,10 +1992,12 @@ function renderBoard(S, me) {
     v.c.setAttribute('aria-label', w + (rev || showKey ? ' — ' + COLOR_NAME[col] : ''));
     v.c.title = rev ? w + ' — ' + COLOR_NAME[col] : '';
     // метки
-    const mk = rev ? '' : m.join(',');
+    const pos = rev || !m.length ? -1 : order.indexOf(i);
+    const mk = rev ? '' : (pos + 1) + '|' + m.join(',');
     if (v.key !== mk) {
       v.key = mk;
       v.marks.textContent = '';
+      if (pos >= 0) { const o = el('span', 'mk ord', String(pos + 1)); o.title = 'Откроется ' + (pos + 1) + '-й'; v.marks.appendChild(o); }
       const show = m.slice(0, 4);
       show.forEach(id => {
         const s = el('span', 'mk' + (id === myId ? ' me' : ''), initials(S.players[id].name));
@@ -1965,6 +2008,8 @@ function renderBoard(S, me) {
     }
     v.conf.title = 'Открыть «' + w.toUpperCase() + '»';
   }
+  clearTimeout(flipTimer);
+  if (nextFlip < Infinity) flipTimer = setTimeout(render, nextFlip - now + 10);
 }
 
 function renderClue(S, me) {
@@ -1985,10 +2030,16 @@ function renderClue(S, me) {
     showBox.appendChild(pill);
     const activeOp = me.role === 'op' && me.team === g.turn;
     if (activeOp) {
-      const b = el('button', 'btn', 'Завершить ход'); b.type = 'button';
-      b.onclick = () => dispatch('end');
+      const order = G.markOrder(g);
+      const b = el('button', 'btn end-btn' + (order.length ? ' primary' : ''),
+        order.length ? 'Открыть выбранные (' + order.length + ') и завершить ход' : 'Завершить ход');
+      b.type = 'button';
+      b.onclick = () => { b.disabled = true; dispatch('end', { reveal: order }); };
       showBox.appendChild(b);
-      hint.textContent = 'Нажмите на карточку, чтобы отметить её, и на зелёную ✓, чтобы открыть';
+      hint.textContent = order.length
+        ? 'Отмеченные откроются по очереди (1, 2…) до первой ошибки, затем ход перейдёт. Зелёная ✓ на карточке — открыть только её и продолжить.' +
+          (g.left !== null && order.length > g.left ? ' Сейчас можно открыть не больше ' + g.left + '.' : '')
+        : 'Нажмите на карточки, чтобы выбрать их, — потом «Открыть выбранные». Зелёная ✓ на карточке — открыть её сразу.';
     } else if (me.role === 'spy' && me.team === g.turn) {
       hint.textContent = 'Ваша команда отгадывает. Капитан молчит и не подаёт знаков 🤐';
     }
@@ -2108,27 +2159,39 @@ function banner(html, long) {
   bannerTimer = setTimeout(() => { b.className = 'banner'; }, long ? 3300 : 2100);
 }
 
+const STAGGER = 650;          // пауза между переворотами нескольких карточек
+const flipAt = {};             // номер карточки -> когда её перевернуть
+let flipTimer = 0;
+function flipCard(i) {
+  const c = cards[i].c;
+  c.classList.remove('flip'); void c.offsetWidth; c.classList.add('flip');
+  setTimeout(() => c.classList.remove('flip'), 700);
+}
+
 function effects(prev, S) {
   if (!prev || !S.game) return;
   const g = S.game;
   if (S.phase === 'play' && (prev.phase !== 'play' || prev.games !== S.games)) {
     cards.forEach(v => v.c.classList.remove('flip'));
+    for (const k in flipAt) delete flipAt[k];
     banner([['Ход ' + TEAM[g.turn].adj + ' команды', TEAM[g.turn].cls]]);
     return;
   }
+  let wait = 0;
   if (prev.games === S.games && prev.rev) {
-    for (let i = 0; i < 25; i++) {
-      if (g.rev[i] && !prev.rev[i]) {
-        const c = cards[i].c;
-        c.classList.remove('flip'); void c.offsetWidth; c.classList.add('flip');
-        setTimeout(() => c.classList.remove('flip'), 700);
-      }
-    }
+    const fresh = [];
+    for (let i = 0; i < 25; i++) if (g.rev[i] && !prev.rev[i]) fresh.push(i);
+    // в том порядке, в каком их открыли (по журналу)
+    const pos = i => { for (let k = g.log.length - 1; k >= 0; k--) if (g.log[k].k === 'guess' && g.log[k].w === g.words[i]) return k; return 0; };
+    fresh.sort((a, b) => pos(a) - pos(b));
+    const now = Date.now();
+    fresh.forEach((i, k) => { if (k === 0) flipCard(i); else flipAt[i] = now + k * STAGGER; });
+    if (fresh.length) wait = (fresh.length - 1) * STAGGER;
   }
   if (S.phase === 'over' && prev.phase === 'play') {
-    banner([['Победа ' + TEAM[g.winner].gen + '!', TEAM[g.winner].cls]], true);
+    setTimeout(() => banner([['Победа ' + TEAM[g.winner].gen + '!', TEAM[g.winner].cls]], true), wait + 300);
   } else if (S.phase === 'play' && prev.phase === 'play' && prev.round !== g.round && prev.turn !== g.turn) {
-    setTimeout(() => banner([['Ход ' + TEAM[g.turn].adj + ' команды', TEAM[g.turn].cls]]), 450);
+    setTimeout(() => banner([['Ход ' + TEAM[g.turn].adj + ' команды', TEAM[g.turn].cls]]), wait + 450);
   }
 }
 
